@@ -1,0 +1,3 @@
+[alias]
+# Стенд проекта: cargo xtask check | check --full | night [часы]
+xtask = "run --package xtask --quiet --"

@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/yadro-core", "xtask"]
+
+[workspace.package]
+version = "0.1.2"
+edition = "2024"
+# Совпадает с версией в rust-toolchain.toml.
+rust-version = "1.97"
+publish = false
+
+[workspace.lints.rust]
+# Во всём проекте нет и не должно быть unsafe-кода.
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[profile.release]
+# Понятные трассировки, если полный прогон упадёт в release.
+debug = "line-tables-only"
