@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/yadro-core", "xtask"]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
 # Совпадает с версией в rust-toolchain.toml.
 rust-version = "1.97"

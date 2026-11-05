@@ -1,5 +1,7 @@
 //! DXF: запись листа в R12 и чтение контуров из файлов других программ.
 //!
+//! Запись: контуры — POLYLINE с выпуклостью или CIRCLE, подписи — TEXT.
+//!
 //! Чтение понимает POLYLINE (с VERTEX и выпуклостью), LWPOLYLINE, CIRCLE, а также
 //! LINE и ARC — их концы сцепляются в замкнутые контуры (с зазором до
 //! [`JOIN_TOL_MM`]). Остальные объекты (TEXT, DIMENSION, INSERT…) пропускаются.
@@ -121,9 +123,30 @@ pub fn write(sheet: &Sheet) -> String {
         g(0, "SEQEND");
         g(8, &it.layer);
     }
+    for tx in sheet.texts() {
+        g(0, "TEXT");
+        g(8, &tx.layer);
+        g(10, &num(tx.at.x));
+        g(20, &num(tx.at.y));
+        g(30, "0");
+        g(40, &num(tx.height));
+        g(1, &dxf_text(&tx.text));
+    }
     g(0, "ENDSEC");
     g(0, "EOF");
     s
+}
+
+/// Текст для R12: не-ASCII символы — как `\U+XXXX` (так их понимают AutoCAD и
+/// большинство CAM), переводы строк — пробелами.
+fn dxf_text(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\n' | '\r' => " ".to_string(),
+            c if c.is_ascii() => c.to_string(),
+            c => format!("\\U+{:04X}", u32::from(c)),
+        })
+        .collect()
 }
 
 /// Пары (код, значение, номер строки значения).

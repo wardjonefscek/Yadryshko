@@ -9,6 +9,7 @@ use crate::arc::Arc;
 use crate::region::Region;
 use crate::ring::{Ring, RingError};
 use crate::vec::Vec2;
+use crate::xform::Xform2;
 use std::f64::consts::FRAC_PI_8;
 
 /// Вершина контура и выпуклость участка до следующей вершины.
@@ -156,6 +157,45 @@ impl Path {
             .sum()
     }
 
+    /// Тот же контур после переноса, поворота, равномерного масштаба или зеркала
+    /// (зеркало меняет направление дуг). При другом преобразовании дуги стали бы
+    /// эллипсами — тогда `None`.
+    pub fn transformed(&self, xf: &Xform2) -> Option<Self> {
+        let [[a, b], [c, d]] = xf.a;
+        let (l1, l2) = (a * a + c * c, b * b + d * d);
+        let big = l1.max(l2);
+        let similar =
+            big > 0.0 && (l1 - l2).abs() <= 1e-12 * big && (a * b + c * d).abs() <= 1e-12 * big;
+        if !similar {
+            return None;
+        }
+        let k = if xf.determinant() < 0.0 { -1.0 } else { 1.0 };
+        Some(Self {
+            verts: self
+                .verts
+                .iter()
+                .map(|v| PathVertex {
+                    at: xf.apply_point(v.at),
+                    bulge: k * v.bulge,
+                })
+                .collect(),
+        })
+    }
+
+    /// Тот же контур, сдвинутый на `d`.
+    pub fn translated(&self, d: Vec2) -> Self {
+        Self {
+            verts: self
+                .verts
+                .iter()
+                .map(|v| PathVertex {
+                    at: v.at + d,
+                    bulge: v.bulge,
+                })
+                .collect(),
+        }
+    }
+
     /// Тот же контур с обратным обходом.
     pub fn reversed(&self) -> Self {
         let n = self.verts.len();
@@ -210,6 +250,31 @@ mod tests {
         let s = Path::slot(Vec2::ZERO, Vec2::new(8.0, 0.0), 1.0);
         assert!((s.area() - (16.0 + PI)).abs() < 1e-12);
         assert!((s.length() - (16.0 + 2.0 * PI)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn transforms_keep_arcs() {
+        let rr = Path::rounded_rect(0.0, 0.0, 10.0, 6.0, 1.5);
+        let rot = Xform2::rotation(0.7)
+            .then(&Xform2::scaling(2.0, 2.0))
+            .then(&Xform2::translation(Vec2::new(5.0, -3.0)));
+        let r = rr.transformed(&rot).unwrap();
+        assert!((r.area() - 4.0 * rr.area()).abs() < 1e-9);
+        assert!((r.length() - 2.0 * rr.length()).abs() < 1e-9);
+        // Зеркало: тот же контур, обход в другую сторону, дуги по-прежнему выпуклые.
+        let m = rr.transformed(&Xform2::scaling(-1.0, 1.0)).unwrap();
+        assert!((m.area() + rr.area()).abs() < 1e-12);
+        assert!((m.length() - rr.length()).abs() < 1e-12);
+        assert!(
+            rr.transformed(&Xform2::scaling(2.0, 1.0)).is_none(),
+            "эллипс — нет"
+        );
+        let t = rr.translated(Vec2::new(1.0, 2.0));
+        assert_eq!(
+            t.vertices()[0].at,
+            rr.vertices()[0].at + Vec2::new(1.0, 2.0)
+        );
+        assert!((t.area() - rr.area()).abs() < 1e-12);
     }
 
     #[test]

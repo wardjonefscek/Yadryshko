@@ -25,10 +25,24 @@ pub struct SheetItem {
     pub path: Path,
 }
 
-/// Лист: контуры по слоям.
+/// Подпись на листе (в CAM слой подписей обычно не режут).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetText {
+    /// Слой.
+    pub layer: String,
+    /// Левый нижний угол первой буквы, мм.
+    pub at: Vec2,
+    /// Высота букв, мм.
+    pub height: f64,
+    /// Текст.
+    pub text: String,
+}
+
+/// Лист: контуры и подписи по слоям.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sheet {
     items: Vec<SheetItem>,
+    texts: Vec<SheetText>,
 }
 
 /// Число в файл: 6 знаков после запятой (нанометры), без хвостовых нулей.
@@ -91,17 +105,40 @@ impl Sheet {
         self
     }
 
+    /// Добавить подпись.
+    pub fn add_text(&mut self, layer: &str, at: Vec2, height: f64, text: &str) -> &mut Self {
+        if !text.is_empty() && height > 0.0 {
+            self.texts.push(SheetText {
+                layer: layer.to_string(),
+                at,
+                height,
+                text: text.to_string(),
+            });
+        }
+        self
+    }
+
     /// Контуры.
     pub fn items(&self) -> &[SheetItem] {
         &self.items
     }
 
-    /// Слои в порядке появления.
+    /// Подписи.
+    pub fn texts(&self) -> &[SheetText] {
+        &self.texts
+    }
+
+    /// Слои в порядке появления: сначала слои контуров, потом слои подписей.
     pub fn layers(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
-        for it in &self.items {
-            if !out.contains(&it.layer.as_str()) {
-                out.push(&it.layer);
+        let names = self
+            .items
+            .iter()
+            .map(|it| it.layer.as_str())
+            .chain(self.texts.iter().map(|t| t.layer.as_str()));
+        for name in names {
+            if !out.contains(&name) {
+                out.push(name);
             }
         }
         out
@@ -137,6 +174,12 @@ impl Sheet {
                     }
                 }
             }
+        }
+        // Подпись — примерно: ширина буквы 0,6 высоты.
+        for tx in &self.texts {
+            add(tx.at);
+            let w = 0.6 * tx.height * tx.text.chars().count() as f64;
+            add(tx.at + Vec2::new(w, tx.height));
         }
         lo.x.is_finite().then_some((lo, hi))
     }
@@ -186,6 +229,16 @@ impl Sheet {
             ));
             for it in self.items.iter().filter(|it| it.layer == *layer) {
                 s.push_str(&format!("<path d=\"{}\"/>\n", svg_d(&it.path)));
+            }
+            for tx in self.texts.iter().filter(|tx| tx.layer == *layer) {
+                s.push_str(&format!(
+                    "<text x=\"{}\" y=\"{}\" font-size=\"{}\" font-family=\"sans-serif\" fill=\"{}\" stroke=\"none\">{}</text>\n",
+                    num(tx.at.x),
+                    num(-tx.at.y),
+                    num(tx.height),
+                    SVG_COLORS[k % SVG_COLORS.len()],
+                    escape(&tx.text)
+                ));
             }
             s.push_str("</g>\n");
         }
@@ -256,6 +309,24 @@ mod tests {
             is_circle(&Path::rounded_rect(0.0, 0.0, 1.0, 1.0, 0.5)),
             None
         );
+    }
+
+    #[test]
+    fn texts_go_to_both_files() {
+        let mut s = Sheet::new();
+        s.add_path("CONTOUR", Path::circle(Vec2::ZERO, 5.0))
+            .add_text("LABELS", Vec2::new(-5.0, -8.0), 2.0, "Нервюра 1 <z = 0>");
+        assert_eq!(s.layers(), vec!["CONTOUR", "LABELS"]);
+        let dxf = s.to_dxf();
+        assert!(dxf.contains("\nTEXT\n8\nLABELS\n"));
+        assert!(dxf.contains("\\U+041D\\U+0435"), "кириллица — через \\U+");
+        let svg = s.to_svg();
+        assert!(svg.contains(">Нервюра 1 &lt;z = 0&gt;</text>"));
+        // Чтение DXF подписи пропускает.
+        let back = Sheet::from_dxf(&dxf).unwrap();
+        assert_eq!(back.items().len(), 1);
+        let (lo, _) = s.bounds().unwrap();
+        assert!((lo.y + 8.0).abs() < 1e-12, "подпись входит в габарит");
     }
 
     #[test]

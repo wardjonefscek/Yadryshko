@@ -53,7 +53,7 @@ pub use path::{Path, PathVertex, Segment};
 pub use predicates::Sign;
 pub use region::Region;
 pub use ring::{Location, Ring};
-pub use sheet::{Sheet, SheetItem};
+pub use sheet::{Sheet, SheetItem, SheetText};
 pub use vec::{Vec2, Vec3};
 pub use xform::{Xform2, Xform3};
 
