@@ -166,6 +166,62 @@ impl Region {
         self.offset(r_mm.abs())?.offset(-r_mm.abs())
     }
 
+    /// Убрать острова площадью меньше `min_island_mm2` и заполнить дыры меньше
+    /// `min_hole_mm2` (площадь контура — вместе со всем, что внутри). Вложенность
+    /// учитывается: убранный остров уносит свои дыры, заполненная дыра — острова в
+    /// ней. Так чистят шум топооптимизации.
+    pub fn drop_small(&self, min_island_mm2: f64, min_hole_mm2: f64) -> Self {
+        let lim = |mm2: f64| mm2.max(0.0) * 2e6; // в удвоенных квадратных шагах сетки
+        let (isl, hole) = (lim(min_island_mm2), lim(min_hole_mm2));
+        let area: Vec<i128> = self.rings.iter().map(Ring::twice_area).collect();
+        let small: Vec<bool> = area
+            .iter()
+            .map(|&a| {
+                if a > 0 {
+                    (a as f64) < isl
+                } else {
+                    ((-a) as f64) < hole
+                }
+            })
+            .collect();
+        if !small.contains(&true) {
+            return self.clone();
+        }
+        // Внутри ли контур k контура m: контуры не пересекаются, поэтому хватает одной
+        // вершины k не на границе m.
+        let inside = |k: usize, m: usize| {
+            let ring = &self.rings[m];
+            self.rings[k]
+                .points()
+                .iter()
+                .find(|&&q| !ring.on_boundary(q))
+                .is_some_and(|&q| ring.winding(q) != 0)
+        };
+        let n = self.rings.len();
+        let parent: Vec<Option<usize>> = (0..n)
+            .map(|k| {
+                (0..n)
+                    .filter(|&m| area[m].abs() > area[k].abs() && inside(k, m))
+                    .min_by_key(|&m| area[m].abs())
+            })
+            .collect();
+        let keep = |k: usize| {
+            let mut c = Some(k);
+            while let Some(i) = c {
+                if small[i] {
+                    return false;
+                }
+                c = parent[i];
+            }
+            true
+        };
+        let rings: Vec<Ring> = (0..n)
+            .filter(|&k| keep(k))
+            .map(|k| self.rings[k].clone())
+            .collect();
+        Self::from_rings_nonzero(&rings)
+    }
+
     /// Все рёбра всех контуров.
     pub fn edges(&self) -> impl Iterator<Item = (GridPoint, GridPoint)> + '_ {
         self.rings.iter().flat_map(Ring::edges)
