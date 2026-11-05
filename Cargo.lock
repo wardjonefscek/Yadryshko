@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "xtask"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "yadro-core"
-version = "0.1.2"
+version = "0.1.3"

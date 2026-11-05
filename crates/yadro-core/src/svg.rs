@@ -127,6 +127,29 @@ impl Svg {
         self.polygon(&points, style)
     }
 
+    /// Контур на 2D-сетке.
+    pub fn ring(&mut self, ring: &crate::ring::Ring, style: Style) -> &mut Self {
+        self.grid_polygon(ring.points(), style)
+    }
+
+    /// Область: внешние контуры стилем `outer`, отверстия стилем `hole`.
+    pub fn region(
+        &mut self,
+        region: &crate::region::Region,
+        outer: Style,
+        hole: Style,
+    ) -> &mut Self {
+        for r in region.rings() {
+            let s = if r.is_ccw() {
+                outer.clone()
+            } else {
+                hole.clone()
+            };
+            self.ring(r, s);
+        }
+        self
+    }
+
     /// Точка (кружок радиусом 3 пикселя).
     pub fn dot(&mut self, at: Vec2, color: &str) -> &mut Self {
         self.items.push(Item::Dot {
