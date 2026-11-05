@@ -14,7 +14,7 @@ mod common;
 
 use common::*;
 use std::f64::consts::PI;
-use yadro_core::svg::{Style, Svg};
+use yadro_core::card::shape_of;
 use yadro_core::testkit::{Rng, for_cases};
 use yadro_core::tol::{GRID_LIMIT, MIN_CHORD_TOL_MM};
 use yadro_core::{GridPoint, Location, Path, Region, Vec2};
@@ -34,19 +34,6 @@ fn signed_dist(q: GridPoint, r: &Region) -> f64 {
     }
 }
 
-fn card(name: &str, r: &Region, o: &Region) -> String {
-    let mut s = Svg::new();
-    s.region(r, Style::filled("#1f5fbf", 0.25), Style::line("#1f5fbf"));
-    s.region(
-        o,
-        Style::line("#202020").width(2.0),
-        Style::line("#27ae60").width(2.0),
-    );
-    let path = format!("{}/{name}.svg", env!("CARGO_TARGET_TMPDIR"));
-    let _ = std::fs::write(&path, s.render(900.0));
-    path
-}
-
 /// Все проверки эквидистанты на `d` мкм с допуском хорды `tol` мкм. Возвращает результат.
 fn check_offset(name: &str, r: &Region, d: f64, tol: f64, rng: Option<&mut Rng>) -> Region {
     let o = r
@@ -54,9 +41,8 @@ fn check_offset(name: &str, r: &Region, d: f64, tol: f64, rng: Option<&mut Rng>)
         .expect("в пределах сетки");
     let tol = tol.max(MIN_CHORD_TOL_MM * 1000.0);
     let fail = |what: String| -> ! {
-        let path = card(name, r, &o);
         panic!(
-            "{what}\nd = {d} мкм, допуск {tol} мкм\nA = {}\nкарточка: {path}",
+            "{name}: {what}\nd = {d} мкм, допуск {tol} мкм\nA = {}",
             rings_text(r)
         )
     };
@@ -380,20 +366,27 @@ fn random_offset_case(rng: &mut Rng) {
     };
     let d = if rng.chance(0.5) { mag } else { -mag };
     let tol = (mag * 10f64.powf(rng.range_f64(-5.0, -2.0))).max(0.5);
-    let o = check_offset("random_offsets_agree_with_distances", &r, d, tol, Some(rng));
-    // Вложенность: при большем d результат не меньше.
-    let step = tol + 5.0;
-    let o2 = r
-        .offset_tol((d + step) / 1000.0, tol / 1000.0)
-        .expect("в пределах сетки");
-    if !o.difference(&o2).is_empty() {
-        let path = card("random_offsets_monotone", &o, &o2);
-        panic!(
-            "вложенность нарушена: d = {d}, d₂ = {}\nA = {}\nкарточка: {path}",
-            d + step,
-            rings_text(&r)
+    let seed = rng.next_u64();
+    check_shape_or_card("random_offsets_agree_with_distances", &shape_of(&r), |r| {
+        let mut probes = Rng::new(seed);
+        let o = check_offset(
+            "random_offsets_agree_with_distances",
+            r,
+            d,
+            tol,
+            Some(&mut probes),
         );
-    }
+        // Вложенность: при большем d результат не меньше.
+        let step = tol + 5.0;
+        let o2 = r
+            .offset_tol((d + step) / 1000.0, tol / 1000.0)
+            .expect("в пределах сетки");
+        assert!(
+            o.difference(&o2).is_empty(),
+            "вложенность нарушена: d = {d}, d₂ = {}",
+            d + step
+        );
+    });
 }
 
 #[test]

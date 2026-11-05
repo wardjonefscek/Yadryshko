@@ -8,7 +8,9 @@
 //! контуры ([`ring`]), области с отверстиями ([`region`]) и булевы операции
 //! над ними методом snap rounding ([`boolean`]); дуги ([`arc`]), контуры из
 //! отрезков и дуг ([`path`]), эквидистанта и скругления ([`offset`]); профили
-//! крыла из .dat и NACA ([`airfoil`]), контур из поля плотности TopOpt ([`density`]).
+//! крыла из .dat и NACA ([`airfoil`]), контур из поля плотности TopOpt ([`density`]);
+//! восстановление дуг ([`fit`]), лист для изготовления в DXF и SVG ([`sheet`],
+//! [`dxf`]).
 //!
 //! Единицы — миллиметры. 2D-координаты хранятся целыми микрометрами
 //! (см. [`grid`]); 3D — числами `f64`.
@@ -19,8 +21,11 @@ pub mod airfoil;
 pub mod arc;
 pub mod bigint;
 pub mod boolean;
+pub mod card;
 pub mod density;
+pub mod dxf;
 pub mod exact;
+pub mod fit;
 pub mod grid;
 pub mod mesh;
 pub mod offset;
@@ -29,6 +34,7 @@ pub mod predicates;
 pub mod region;
 pub mod ring;
 pub mod seg;
+pub mod sheet;
 pub mod stl;
 pub mod svg;
 pub mod testkit;
@@ -47,6 +53,7 @@ pub use path::{Path, PathVertex, Segment};
 pub use predicates::Sign;
 pub use region::Region;
 pub use ring::{Location, Ring};
+pub use sheet::{Sheet, SheetItem};
 pub use vec::{Vec2, Vec3};
 pub use xform::{Xform2, Xform3};
 

@@ -1,7 +1,8 @@
 //! Общее для тестов ядра: короткие конструкторы, случайные области, расстояния.
 #![allow(dead_code)]
 
-use yadro_core::testkit::Rng;
+use yadro_core::card::{self, Card, Shape};
+use yadro_core::testkit::{Rng, quietly};
 use yadro_core::tol::GRID_LIMIT;
 use yadro_core::{GridPoint, Region, Ring};
 
@@ -142,4 +143,69 @@ pub fn dist_to_boundary(q: GridPoint, r: &Region) -> f64 {
     r.edges()
         .map(|(a, b)| dist(q, a, b))
         .fold(f64::INFINITY, f64::min)
+}
+
+/// Проверить пару фигур. Если проверка падает — ужать пример, сохранить карточку
+/// ошибки и упасть с путём к ней (и с ужатыми данными в сообщении).
+pub fn check_pair_or_card(name: &str, a: &Shape, b: &Shape, check: impl Fn(&Region, &Region)) {
+    let run = |a: &Shape, b: &Shape| quietly(|| check(&card::region_of(a), &card::region_of(b)));
+    let Err(first) = run(a, b) else {
+        return;
+    };
+    let (sa, sb) = card::shrink_pair((a.clone(), b.clone()), |(x, y)| run(x, y).is_err());
+    let msg = run(&sa, &sb).err().unwrap_or_else(|| first.clone());
+    let (n0, n1) = (
+        card::vertex_count(a) + card::vertex_count(b),
+        card::vertex_count(&sa) + card::vertex_count(&sb),
+    );
+    let c = Card::new(name)
+        .message(&msg)
+        .note(&format!("Пример ужат: было {n0} вершин, стало {n1}."))
+        .note(&if first == msg {
+            String::new()
+        } else {
+            format!("Исходное падение: {first}")
+        })
+        .shape("A", "#1f5fbf", &sa)
+        .shape("B", "#c0392b", &sb)
+        .code("a", &sa)
+        .code("b", &sb);
+    let path = c.save().map_or_else(
+        |e| format!("(не сохранилась: {e})"),
+        |p| p.display().to_string(),
+    );
+    panic!(
+        "{msg}\nужатый пример: {n1} вершин (было {n0})\n{}\n{}\nкарточка: {path}",
+        card::shape_code("a", &sa),
+        card::shape_code("b", &sb)
+    );
+}
+
+/// То же для одной фигуры.
+pub fn check_shape_or_card(name: &str, s: &Shape, check: impl Fn(&Region)) {
+    let run = |s: &Shape| quietly(|| check(&card::region_of(s)));
+    let Err(first) = run(s) else {
+        return;
+    };
+    let small = card::shrink_shapes(s.clone(), |x| run(x).is_err());
+    let msg = run(&small).err().unwrap_or_else(|| first.clone());
+    let (n0, n1) = (card::vertex_count(s), card::vertex_count(&small));
+    let c = Card::new(name)
+        .message(&msg)
+        .note(&format!("Пример ужат: было {n0} вершин, стало {n1}."))
+        .note(&if first == msg {
+            String::new()
+        } else {
+            format!("Исходное падение: {first}")
+        })
+        .shape("A", "#1f5fbf", &small)
+        .code("a", &small);
+    let path = c.save().map_or_else(
+        |e| format!("(не сохранилась: {e})"),
+        |p| p.display().to_string(),
+    );
+    panic!(
+        "{msg}\nужатый пример: {n1} вершин (было {n0})\n{}\nкарточка: {path}",
+        card::shape_code("a", &small)
+    );
 }

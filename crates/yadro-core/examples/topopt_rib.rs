@@ -8,11 +8,16 @@
 //! 3. Контур по порогу 0,5 с уплотнением ×3, без островов и дыр меньше 4 мм²,
 //!    обрезка профилем, паз под лонжерон, проверка под фрезу ⌀3 мм.
 //!
-//! Картинка — в `target/topopt_rib.svg`. Запуск:
+//! 4. Лист для станка: дуги восстанавливаются (допуск 5 мкм), наружный контур —
+//!    слой CONTOUR, вырезы — HOLES; файлы DXF R12 и SVG в мм.
+//!
+//! Картинка — в `target/topopt_rib.svg`, файлы для станка — `target/topopt_rib.dxf`
+//! и `target/topopt_rib_cut.svg`. Запуск:
 //! `cargo run -p yadro-core --release --example topopt_rib`
 
 use yadro_core::svg::{Style, Svg};
-use yadro_core::{Airfoil, ContourOptions, DensityField, Path, Vec2};
+use yadro_core::tol::FIT_TOL_MM;
+use yadro_core::{Airfoil, ContourOptions, DensityField, Path, Sheet, Vec2};
 
 const CLARK_Y: &str = include_str!("../tests/data/clarky.dat");
 const CHORD: f64 = 200.0;
@@ -113,4 +118,21 @@ fn main() {
     let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/topopt_rib.svg");
     svg.save(out, 1400.0).expect("запись SVG");
     println!("Картинка:         target/topopt_rib.svg");
+
+    // Лист для станка.
+    let mut sheet = Sheet::new();
+    sheet.add_region("CONTOUR", "HOLES", &part, FIT_TOL_MM);
+    let before: usize = part.rings().iter().map(|r| r.len()).sum();
+    let pieces: usize = sheet.items().iter().map(|it| it.path.len()).sum();
+    let arcs: usize = sheet
+        .items()
+        .iter()
+        .flat_map(|it| it.path.vertices())
+        .filter(|v| v.bulge != 0.0)
+        .count();
+    println!("Для станка:       {before} вершин ломаной → {pieces} участков, из них дуг {arcs}");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target");
+    std::fs::write(format!("{dir}/topopt_rib.dxf"), sheet.to_dxf()).expect("запись DXF");
+    std::fs::write(format!("{dir}/topopt_rib_cut.svg"), sheet.to_svg()).expect("запись SVG");
+    println!("Файлы:            target/topopt_rib.dxf, target/topopt_rib_cut.svg");
 }

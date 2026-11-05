@@ -12,34 +12,18 @@ mod common;
 
 use common::*;
 use yadro_core::boolean::combine;
-use yadro_core::svg::{Style, Svg};
+use yadro_core::card::shape_of;
 use yadro_core::testkit::{Rng, for_cases};
 use yadro_core::tol::GRID_LIMIT;
 use yadro_core::{Location, Op, Region, Ring};
-
-/// Карточка ошибки: картинка A, B и результата в папке временных файлов тестов.
-fn card(name: &str, a: &Region, b: &Region, r: &Region) -> String {
-    let mut s = Svg::new();
-    s.region(a, Style::filled("#1f5fbf", 0.25), Style::line("#1f5fbf"));
-    s.region(b, Style::filled("#c0392b", 0.25), Style::line("#c0392b"));
-    s.region(
-        r,
-        Style::line("#202020").width(2.0),
-        Style::line("#27ae60").width(2.0),
-    );
-    let path = format!("{}/{name}.svg", env!("CARGO_TARGET_TMPDIR"));
-    let _ = std::fs::write(&path, s.render(900.0));
-    path
-}
 
 /// Все проверки пары: корректность, тождества. Возвращает [U, I, D, X].
 fn check_pair(name: &str, a: &Region, b: &Region) -> [Region; 4] {
     let ops = [Op::Union, Op::Intersection, Op::Difference, Op::Xor];
     let res = ops.map(|op| yadro_core::boolean::boolean(a, b, op));
-    let fail = |what: String, r: &Region| -> ! {
-        let path = card(name, a, b, r);
+    let fail = |what: String, _r: &Region| -> ! {
         panic!(
-            "{what}\nA = {}\nB = {}\nкарточка: {path}",
+            "{name}: {what}\nA = {}\nB = {}",
             rings_text(a),
             rings_text(b)
         )
@@ -318,6 +302,47 @@ fn catalog_unit_shift() {
 
 // ───────────────────────────── Случайные пары ─────────────────────────────
 
+/// Пара корректна (см. [`check_pair`]), а случайные точки вдали от границ
+/// классифицируются так же, как по исходным фигурам. Точки берутся из своего
+/// генератора с сидом `seed`, чтобы проверка повторялась при ужатии примера.
+fn pair_oracle(a: &Region, b: &Region, lim: i64, seed: u64) {
+    let res = check_pair("random_pairs_agree", a, b);
+    let edges: Vec<_> = a.edges().chain(b.edges()).collect();
+    if edges.is_empty() {
+        return;
+    }
+    let mut rng = Rng::new(seed);
+    for _ in 0..24 {
+        let q = if rng.chance(0.3) {
+            // Рядом с вершиной.
+            let v = edges[rng.below(edges.len() as u64) as usize].0;
+            p(
+                (v.x() + rng.range_i64(-3, 3)).clamp(-GRID_LIMIT, GRID_LIMIT),
+                (v.y() + rng.range_i64(-3, 3)).clamp(-GRID_LIMIT, GRID_LIMIT),
+            )
+        } else {
+            p(rng.range_i64(-lim, lim), rng.range_i64(-lim, lim))
+        };
+        if edges.iter().any(|&(u, v)| dist(q, u, v) < 3.0) {
+            continue;
+        }
+        let ina = a.locate(q) == Location::Inside;
+        let inb = b.locate(q) == Location::Inside;
+        for (op, r) in [Op::Union, Op::Intersection, Op::Difference, Op::Xor]
+            .iter()
+            .zip(&res)
+        {
+            let got = r.locate(q);
+            let want = if op.apply(ina, inb) {
+                Location::Inside
+            } else {
+                Location::Outside
+            };
+            assert_eq!(got, want, "{op:?}: точка {q:?}");
+        }
+    }
+}
+
 #[test]
 fn random_pairs_agree() {
     for_cases("random_pairs_agree", 2_000, |rng| {
@@ -342,50 +367,70 @@ fn random_pairs_agree() {
                 .collect();
             b = Region::from_rings_nonzero(&rings);
         }
-        let res = check_pair("random_pairs_agree", &a, &b);
-        // Независимая сверка случайными точками вдали от границ.
-        let edges: Vec<_> = a.edges().chain(b.edges()).collect();
-        if edges.is_empty() {
-            return;
-        }
         let lim = (scale + 2).min(GRID_LIMIT);
-        for _ in 0..24 {
-            let q = if rng.chance(0.3) {
-                // Рядом с вершиной.
-                let v = edges[rng.below(edges.len() as u64) as usize].0;
-                p(
-                    (v.x() + rng.range_i64(-3, 3)).clamp(-GRID_LIMIT, GRID_LIMIT),
-                    (v.y() + rng.range_i64(-3, 3)).clamp(-GRID_LIMIT, GRID_LIMIT),
-                )
-            } else {
-                p(rng.range_i64(-lim, lim), rng.range_i64(-lim, lim))
-            };
-            if edges.iter().any(|&(u, v)| dist(q, u, v) < 3.0) {
-                continue;
-            }
-            let ina = a.locate(q) == Location::Inside;
-            let inb = b.locate(q) == Location::Inside;
-            for (op, r) in [Op::Union, Op::Intersection, Op::Difference, Op::Xor]
-                .iter()
-                .zip(&res)
-            {
-                let got = r.locate(q);
-                let want = if op.apply(ina, inb) {
-                    Location::Inside
-                } else {
-                    Location::Outside
-                };
-                if got != want {
-                    let path = card("random_pairs_agree", &a, &b, r);
-                    panic!(
-                        "{op:?}: точка {q:?} — {got:?}, ожидалось {want:?}\nA = {}\nB = {}\nкарточка: {path}",
-                        rings_text(&a),
-                        rings_text(&b)
-                    );
-                }
-            }
-        }
+        let seed = rng.next_u64();
+        check_pair_or_card(
+            "random_pairs_agree",
+            &shape_of(&a),
+            &shape_of(&b),
+            |a, b| pair_oracle(a, b, lim, seed),
+        );
     });
+}
+
+/// Подсаженная ошибка: «объединение не больше большего операнда» — ложно почти
+/// всегда. Карточка должна появиться, в ней — команда повтора, картинка и код,
+/// а ужатый пример — пара треугольников.
+#[test]
+fn card_for_planted_bug() {
+    let out = yadro_core::testkit::quietly(|| {
+        for_cases("card_for_planted_bug", 1, |rng| {
+            let a = Region::from_ring(star(rng, 0, 0, 2000.0, 9000.0, 17));
+            let b = Region::from_ring(star(rng, 6000, 1000, 2000.0, 9000.0, 13));
+            check_pair_or_card(
+                "card_for_planted_bug",
+                &shape_of(&a),
+                &shape_of(&b),
+                |a, b| {
+                    let u = a.union(b);
+                    assert!(
+                        u.twice_area() <= a.twice_area().max(b.twice_area()),
+                        "подсаженная ошибка сработала"
+                    );
+                },
+            );
+        });
+    });
+    let msg = out.expect_err("подсаженная ошибка должна сработать");
+    assert!(msg.contains("YADRO_SEED="), "{msg}");
+    let n: usize = msg
+        .lines()
+        .find_map(|l| l.strip_prefix("ужатый пример: "))
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .expect("размер ужатого примера в сообщении");
+    assert!(
+        n <= 6,
+        "ужатый пример — {n} вершин, ждали пару треугольников"
+    );
+    let path = msg
+        .lines()
+        .find_map(|l| l.strip_prefix("карточка: "))
+        .expect("путь к карточке");
+    let html = std::fs::read_to_string(path).expect("карточка сохранена");
+    for part in [
+        "Как повторить",
+        "YADRO_SEED=",
+        "<svg",
+        "let a: &amp;[",
+        "Пример ужат",
+    ] {
+        assert!(html.contains(part), "в карточке нет «{part}»");
+    }
+    // YADRO_KEEP_CARDS=1 — оставить карточку, чтобы посмотреть, как она выглядит.
+    if std::env::var_os("YADRO_KEEP_CARDS").is_none() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]

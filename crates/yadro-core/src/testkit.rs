@@ -8,7 +8,9 @@
 //! `YADRO_SEED` — начальный сид.
 
 use crate::vec::{Vec2, Vec3};
+use std::cell::{Cell, RefCell};
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::Once;
 
 /// Генератор SplitMix64: быстрый и воспроизводимый.
 #[derive(Clone, Debug)]
@@ -144,6 +146,75 @@ pub fn base_seed() -> u64 {
         .unwrap_or(0x5EED_2026_1030)
 }
 
+thread_local! {
+    /// Текущий случай `for_cases` в этом потоке: (имя теста, сид).
+    static CURRENT: RefCell<Option<(String, u64)>> = const { RefCell::new(None) };
+    /// Не печатать паники в этом потоке (ужатие примера ловит их сотнями).
+    static QUIET: Cell<bool> = const { Cell::new(false) };
+}
+
+static HOOK: Once = Once::new();
+
+/// Текст паники.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_else(|| "(без текста)".to_string())
+}
+
+/// Команда, которая повторяет текущий случай `for_cases`, если он идёт.
+pub fn replay_command() -> Option<String> {
+    CURRENT.with(|c| {
+        c.borrow().as_ref().map(|(name, seed)| {
+            format!("YADRO_SEED={seed} YADRO_CASES=1 cargo test -p yadro-core {name}")
+        })
+    })
+}
+
+/// Выполнить `f`; паника не печатается, а возвращается текстом.
+pub fn quietly<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    HOOK.call_once(|| {
+        let prev = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if !QUIET.with(Cell::get) {
+                prev(info);
+            }
+        }));
+    });
+    let was = QUIET.with(|q| q.replace(true));
+    let r = panic::catch_unwind(AssertUnwindSafe(f));
+    QUIET.with(|q| q.set(was));
+    r.map_err(|p| panic_text(p.as_ref()))
+}
+
+/// Ужать пример: пока какой-нибудь вариант поменьше из `smaller` ещё падает,
+/// перейти к нему. `budget` — сколько вариантов проверить всего.
+pub fn shrink<T: Clone>(
+    start: T,
+    smaller: impl Fn(&T) -> Vec<T>,
+    mut fails: impl FnMut(&T) -> bool,
+    budget: usize,
+) -> T {
+    let mut cur = start;
+    let mut tries = 0;
+    'outer: loop {
+        for cand in smaller(&cur) {
+            if tries >= budget {
+                break 'outer;
+            }
+            tries += 1;
+            if fails(&cand) {
+                cur = cand;
+                continue 'outer;
+            }
+        }
+        break;
+    }
+    cur
+}
+
 /// Прогнать проверку на случайных случаях.
 ///
 /// `name` — имя тестовой функции: по нему строится команда повтора.
@@ -154,12 +225,11 @@ pub fn for_cases(name: &str, default_cases: u64, mut check: impl FnMut(&mut Rng)
     for i in 0..n {
         let seed = base.wrapping_add(i.wrapping_mul(0xD1B5_4A32_D192_ED03));
         let mut rng = Rng::new(seed);
-        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| check(&mut rng))) {
-            let msg = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("(без текста)");
+        CURRENT.with(|c| *c.borrow_mut() = Some((name.to_string(), seed)));
+        let result = panic::catch_unwind(AssertUnwindSafe(|| check(&mut rng)));
+        CURRENT.with(|c| *c.borrow_mut() = None);
+        if let Err(payload) = result {
+            let msg = panic_text(payload.as_ref());
             panic!(
                 "{name}: упал случай {i} из {n}.\n\
                  Повторить только его: YADRO_SEED={seed} YADRO_CASES=1 cargo test -p yadro-core {name}\n\
