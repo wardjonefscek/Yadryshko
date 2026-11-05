@@ -9,9 +9,12 @@
 //! площадей контуров. Результаты булевых операций всегда корректны.
 
 use crate::boolean::{self, Edge, Op};
-use crate::grid::GridPoint;
+use crate::grid::{GridError, GridPoint};
+use crate::offset;
 use crate::ring::{Location, Ring};
 use crate::seg::{self, Crossing};
+use crate::tol::CHORD_TOL_MM;
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// Что не так с областью.
@@ -139,45 +142,72 @@ impl Region {
         boolean::boolean(self, other, Op::Xor)
     }
 
+    /// Эквидистанта на `d_mm`: > 0 — наружу, < 0 — внутрь; дуги с допуском хорды
+    /// [`CHORD_TOL_MM`]. Подробности и точность — в [`crate::offset`].
+    pub fn offset(&self, d_mm: f64) -> Result<Self, GridError> {
+        offset::offset(self, d_mm, CHORD_TOL_MM)
+    }
+
+    /// Эквидистанта с заданным допуском хорды, мм.
+    pub fn offset_tol(&self, d_mm: f64, tol_mm: f64) -> Result<Self, GridError> {
+        offset::offset(self, d_mm, tol_mm)
+    }
+
+    /// Открытие (opening): сначала внутрь на `r_mm`, потом наружу. Скругляет выпуклые
+    /// углы радиусом r и убирает всё, что уже 2r, — перемычки, усы, мелкие выступы.
+    pub fn opening(&self, r_mm: f64) -> Result<Self, GridError> {
+        self.offset(-r_mm.abs())?.offset(r_mm.abs())
+    }
+
+    /// Закрытие (closing): сначала наружу на `r_mm`, потом внутрь. Скругляет вогнутые
+    /// углы радиусом r и закрывает щели и отверстия уже 2r. Такой деталь выйдет из-под
+    /// фрезы радиуса r: во внутренние углы и узкие пазы фреза не залезет.
+    pub fn closing(&self, r_mm: f64) -> Result<Self, GridError> {
+        self.offset(r_mm.abs())?.offset(-r_mm.abs())
+    }
+
     /// Все рёбра всех контуров.
     pub fn edges(&self) -> impl Iterator<Item = (GridPoint, GridPoint)> + '_ {
         self.rings.iter().flat_map(Ring::edges)
     }
 
-    /// Проверить инвариант (см. описание модуля). Сложность квадратичная — для тестов
-    /// и для проверки чужих данных.
+    /// Проверить инвариант (см. описание модуля): для тестов и для проверки чужих данных.
     pub fn check(&self) -> Result<(), RegionIssue> {
         let edges: Vec<_> = self.edges().collect();
-        for i in 0..edges.len() {
-            for j in i + 1..edges.len() {
-                let (a, b) = (edges[i], edges[j]);
-                match seg::classify(a.0, a.1, b.0, b.1) {
-                    Crossing::Proper | Crossing::Overlap => {
-                        return Err(RegionIssue::Crossing { a, b });
-                    }
-                    Crossing::Touch | Crossing::None => {}
-                }
+        let mut bad = None;
+        boolean::candidate_pairs(&edges, |i, j| {
+            if bad.is_some() {
+                return;
             }
+            let (a, b) = (edges[i], edges[j]);
+            if matches!(
+                seg::classify(a.0, a.1, b.0, b.1),
+                Crossing::Proper | Crossing::Overlap
+            ) {
+                bad = Some(RegionIssue::Crossing { a, b });
+            }
+        });
+        if let Some(issue) = bad {
+            return Err(issue);
         }
         // Делим рёбра в вершинах, лежащих посреди других рёбер (касание вершиной стороны),
         // чтобы середина каждого кусочка была внутренней точкой грани.
-        let verts: Vec<GridPoint> = self
+        let verts: BTreeSet<GridPoint> = self
             .rings
             .iter()
             .flat_map(|r| r.points().iter().copied())
             .collect();
+        let hot = boolean::Hot::new(&verts);
         let mut parts: Vec<Edge> = Vec::new();
         for &(p, q) in &edges {
-            let mut mids: Vec<GridPoint> = verts
-                .iter()
-                .copied()
+            let mut mids: Vec<GridPoint> = hot
+                .near(p, q)
                 .filter(|&c| seg::in_segment_interior(c, p, q))
                 .collect();
             mids.sort_by_key(|c| {
                 let (dx, dy) = (i128::from(c.x() - p.x()), i128::from(c.y() - p.y()));
                 dx * dx + dy * dy
             });
-            mids.dedup();
             let mut prev = p;
             for m in mids.into_iter().chain([q]) {
                 let (u, v, s) = if prev < m {
@@ -189,21 +219,17 @@ impl Region {
                 prev = m;
             }
         }
-        for k in 0..parts.len() {
-            let left = boolean::left_winding(&parts, k)[0];
-            let right = left - parts[k].w[0];
+        let windings = boolean::edge_windings(&parts);
+        for (part, w) in parts.iter().zip(&windings) {
+            let left = w[0];
+            let right = left - part.w[0];
             // Обмотка «слева» — относительно направления кусочка u → v; приводим к направлению контура.
-            let (l, r) = if parts[k].w[0] > 0 {
-                (left, right)
+            let (l, r, e) = if part.w[0] > 0 {
+                (left, right, (part.u, part.v))
             } else {
-                (right, left)
+                (right, left, (part.v, part.u))
             };
             if l != 1 || r != 0 {
-                let e = if parts[k].w[0] > 0 {
-                    (parts[k].u, parts[k].v)
-                } else {
-                    (parts[k].v, parts[k].u)
-                };
                 return Err(RegionIssue::Winding {
                     edge: e,
                     left: l,

@@ -8,9 +8,10 @@
 //!    они могут только сходиться в вершинах или совпадать.
 //! 3. Рёбра делятся в вершинах, совпадающие рёбра сливаются, у каждого остаётся вклад
 //!    в обмотку каждого операнда.
-//! 4. Для каждого ребра считается обмотка обоих операндов слева от него — лучом из точки,
-//!    символически сдвинутой с середины ребра на бесконечно малое расстояние влево.
-//!    Справа обмотка меньше на вклад ребра.
+//! 4. Для каждого ребра считается обмотка обоих операндов слева от него. Через ребро
+//!    обмотка меняется ровно на его вклад, поэтому в каждой связной компоненте хватает
+//!    одного луча (из точки, символически сдвинутой с середины ребра влево), остальное —
+//!    обход граней.
 //! 5. Ребро — граница результата, если правило операции даёт разный ответ слева и справа.
 //!    Из таких рёбер собираются контуры: внутренность всегда слева.
 //!
@@ -21,8 +22,9 @@
 //! на сетку; рёбра смещаются не больше чем на √2/2 шага (0,71 мкм). Предикаты
 //! считаются точно, допусков нет.
 //!
-//! Сложность пока квадратичная по числу рёбер: для деталей каркаса (сотни рёбер)
-//! это миллисекунды. Заметка на будущее: заменить перебор пар заметающей прямой.
+//! Сложность: O(E log E + C·E) на обмотки (C — число связных компонент) плюс поиск пар
+//! рёбер с пересекающимися габаритами сортировкой по x. Для деталей каркаса —
+//! миллисекунды. Заметка на будущее: настоящая заметающая прямая для пар.
 
 use crate::grid::GridPoint;
 use crate::region::Region;
@@ -83,6 +85,33 @@ pub fn combine(a: &Region, b: &Region, rule: impl Fn(bool, bool) -> bool) -> Reg
     from_inputs(&inputs, |w: [i64; 2]| rule(w[0] != 0, w[1] != 0))
 }
 
+/// Как [`combine`], но второй операнд — набор замкнутых ломаных (по правилу ненулевой
+/// обмотки, ломаные могут пересекаться и вырождаться).
+pub(crate) fn combine_loops(
+    a: &Region,
+    loops: &[Vec<GridPoint>],
+    rule: impl Fn(bool, bool) -> bool,
+) -> Region {
+    let mut inputs = Vec::new();
+    for r in a.rings() {
+        inputs.extend(r.edges().map(|(p, q)| Input {
+            a: p,
+            b: q,
+            owner: 0,
+        }));
+    }
+    for l in loops {
+        for i in 0..l.len() {
+            inputs.push(Input {
+                a: l[i],
+                b: l[(i + 1) % l.len()],
+                owner: 1,
+            });
+        }
+    }
+    from_inputs(&inputs, |w: [i64; 2]| rule(w[0] != 0, w[1] != 0))
+}
+
 /// Булева операция.
 pub fn boolean(a: &Region, b: &Region, op: Op) -> Region {
     combine(a, b, |x, y| op.apply(x, y))
@@ -108,10 +137,9 @@ fn from_inputs(inputs: &[Input], inside: impl Fn([i64; 2]) -> bool) -> Region {
         return Region::empty();
     }
     let edges = arrangement(inputs);
+    let windings = edge_windings(&edges);
     let mut directed = Vec::new();
-    for k in 0..edges.len() {
-        let left = left_winding(&edges, k);
-        let e = edges[k];
+    for (e, &left) in edges.iter().zip(&windings) {
         let right = [left[0] - e.w[0], left[1] - e.w[1]];
         match (inside(left), inside(right)) {
             (true, false) => directed.push((e.u, e.v)),
@@ -143,7 +171,7 @@ fn boxes_meet(p: (i64, i64, i64, i64), q: (i64, i64, i64, i64)) -> bool {
 }
 
 /// Пары отрезков с пересекающимися габаритами (сортировка по левому краю).
-fn candidate_pairs(segs: &[(GridPoint, GridPoint)], mut f: impl FnMut(usize, usize)) {
+pub(crate) fn candidate_pairs(segs: &[(GridPoint, GridPoint)], mut f: impl FnMut(usize, usize)) {
     let boxes: Vec<_> = segs.iter().map(|&(a, b)| bbox(a, b)).collect();
     let mut order: Vec<usize> = (0..segs.len()).collect();
     order.sort_by_key(|&i| boxes[i].0);
@@ -192,12 +220,12 @@ pub(crate) fn arrangement(inputs: &[Input]) -> Vec<Edge> {
 }
 
 /// Горячие пиксели, отсортированные по x, для выборки по габариту.
-struct Hot {
+pub(crate) struct Hot {
     pts: Vec<GridPoint>,
 }
 
 impl Hot {
-    fn new(set: &BTreeSet<GridPoint>) -> Self {
+    pub(crate) fn new(set: &BTreeSet<GridPoint>) -> Self {
         // GridPoint упорядочены по (x, y) — BTreeSet уже отсортирован.
         Self {
             pts: set.iter().copied().collect(),
@@ -205,7 +233,7 @@ impl Hot {
     }
 
     /// Пиксели, центры которых в габарите отрезка, расширенном на 1 шаг.
-    fn near(&self, a: GridPoint, b: GridPoint) -> impl Iterator<Item = GridPoint> + '_ {
+    pub(crate) fn near(&self, a: GridPoint, b: GridPoint) -> impl Iterator<Item = GridPoint> + '_ {
         let (lx, ly, hx, hy) = bbox(a, b);
         let start = self.pts.partition_point(|p| p.x() < lx - 1);
         self.pts[start..]
@@ -277,8 +305,8 @@ fn snap(inputs: &[Input], hot_set: &BTreeSet<GridPoint>) -> Vec<Edge> {
 /// при малом ε точка P строго внутри грани слева от ребра.
 ///
 /// РИСК: символический сдвиг держится на том, что `u < v` (тогда n.y ≥ 0) и что в
-/// расположении нет вершин внутри рёбер. Сложность O(n) на ребро, O(n²) на операцию —
-/// для контуров из тысяч рёбер (TopOpt) понадобится заметающая прямая.
+/// расположении нет вершин внутри рёбер. Сложность O(n) — поэтому луч пускается один
+/// раз на связную компоненту (см. [`edge_windings`]), а в тестах служит эталоном.
 pub(crate) fn left_winding(edges: &[Edge], k: usize) -> [i64; 2] {
     let e = edges[k];
     // Удвоенные координаты: середина целая.
@@ -316,6 +344,142 @@ pub(crate) fn left_winding(edges: &[Edge], k: usize) -> [i64; 2] {
         }
     }
     w
+}
+
+/// Порядок направлений по углу против часовой стрелки от оси +x, угол в [0, 2π).
+fn ccw_cmp(a: (i128, i128), b: (i128, i128)) -> Ordering {
+    let half = |v: (i128, i128)| usize::from(!(v.1 > 0 || (v.1 == 0 && v.0 > 0)));
+    half(a).cmp(&half(b)).then_with(|| 0.cmp(&cross(a, b)))
+}
+
+/// Обмотки обоих операндов слева от каждого ребра расположения.
+///
+/// Полуребро `h` — ребро `h / 2`, при чётном `h` в направлении u → v. Грани обходятся
+/// с внутренностью слева: после полуребра a → b берётся выходящее из b полуребро,
+/// первое по часовой стрелке от направления b → a. Через полуребро обмотка справа
+/// меньше обмотки слева на его вклад, поэтому в связной компоненте хватает одного
+/// луча ([`left_winding`]), а остальные грани получают обмотку обходом в ширину.
+///
+/// Требования те же, что у расположения: рёбра не пересекаются и не накладываются,
+/// вершин внутри рёбер нет.
+pub(crate) fn edge_windings(edges: &[Edge]) -> Vec<[i64; 2]> {
+    let n = 2 * edges.len();
+    let origin = |h: usize| {
+        if h.is_multiple_of(2) {
+            edges[h / 2].u
+        } else {
+            edges[h / 2].v
+        }
+    };
+    let target = |h: usize| {
+        if h.is_multiple_of(2) {
+            edges[h / 2].v
+        } else {
+            edges[h / 2].u
+        }
+    };
+    let dir = |h: usize| sub(target(h), origin(h));
+    // Вклад полуребра: при обходе против направления ребра — с обратным знаком.
+    let contrib = |h: usize| {
+        let w = edges[h / 2].w;
+        if h.is_multiple_of(2) {
+            w
+        } else {
+            [-w[0], -w[1]]
+        }
+    };
+
+    // Выходящие полурёбра каждой вершины подряд, против часовой стрелки.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        origin(a)
+            .cmp(&origin(b))
+            .then_with(|| ccw_cmp(dir(a), dir(b)))
+    });
+    let mut pos = vec![0usize; n];
+    let mut run = vec![(0usize, 0usize); n];
+    let mut s = 0;
+    while s < n {
+        let mut e = s + 1;
+        while e < n && origin(order[e]) == origin(order[s]) {
+            e += 1;
+        }
+        for (i, &h) in order.iter().enumerate().take(e).skip(s) {
+            pos[h] = i;
+            run[h] = (s, e);
+        }
+        s = e;
+    }
+    let next: Vec<usize> = (0..n)
+        .map(|h| {
+            let t = h ^ 1; // b → a, выходит из b
+            let (s, e) = run[t];
+            let i = pos[t];
+            order[if i == s { e - 1 } else { i - 1 }]
+        })
+        .collect();
+
+    // Грани — циклы next.
+    let mut face = vec![usize::MAX; n];
+    let mut first = Vec::new();
+    for h in 0..n {
+        if face[h] != usize::MAX {
+            continue;
+        }
+        let f = first.len();
+        first.push(h);
+        let mut c = h;
+        while face[c] == usize::MAX {
+            face[c] = f;
+            c = next[c];
+        }
+        debug_assert_eq!(c, h, "грань должна замыкаться");
+    }
+
+    // Обход граней: один луч на компоненту.
+    let mut wind: Vec<Option<[i64; 2]>> = vec![None; first.len()];
+    let mut queue = Vec::new();
+    for f0 in 0..first.len() {
+        if wind[f0].is_some() {
+            continue;
+        }
+        let h = first[f0];
+        let left = left_winding(edges, h / 2);
+        let w = edges[h / 2].w;
+        wind[f0] = Some(if h.is_multiple_of(2) {
+            left
+        } else {
+            [left[0] - w[0], left[1] - w[1]]
+        });
+        queue.push(f0);
+        while let Some(f) = queue.pop() {
+            let wf = wind[f].expect("грань в очереди уже с обмоткой");
+            let start = first[f];
+            let mut h = start;
+            loop {
+                let g = face[h ^ 1];
+                let c = contrib(h);
+                let wg = [wf[0] - c[0], wf[1] - c[1]];
+                match wind[g] {
+                    None => {
+                        wind[g] = Some(wg);
+                        queue.push(g);
+                    }
+                    Some(old) => assert_eq!(
+                        old, wg,
+                        "ядро: обмотки граней не согласованы — это ошибка ядра, нужен тест"
+                    ),
+                }
+                h = next[h];
+                if h == start {
+                    break;
+                }
+            }
+        }
+    }
+    (0..edges.len())
+        .map(|k| wind[face[2 * k]].expect("обмотка есть у каждой грани"))
+        .collect()
 }
 
 // ───────────────────────────── Сборка контуров ─────────────────────────────
@@ -402,6 +566,46 @@ mod tests {
         assert!(!Op::Intersection.apply(true, false));
         assert!(Op::Difference.apply(true, false) && !Op::Difference.apply(true, true));
         assert!(Op::Xor.apply(false, true) && !Op::Xor.apply(true, true));
+    }
+
+    #[test]
+    fn face_windings_match_ray_casting() {
+        use crate::testkit::for_cases;
+        for_cases("face_windings_match_ray_casting", 300, |rng| {
+            let span = *rng.pick(&[3, 6, 1000, 1 << 30]);
+            let mut inputs = Vec::new();
+            for _ in 0..rng.range_i64(1, 4) {
+                let owner = rng.below(2) as usize;
+                let k = rng.range_i64(3, 8);
+                let pts: Vec<GridPoint> = (0..k)
+                    .map(|_| {
+                        GridPoint::new(rng.range_i64(-span, span), rng.range_i64(-span, span))
+                            .unwrap()
+                    })
+                    .collect();
+                for i in 0..pts.len() {
+                    inputs.push(Input {
+                        a: pts[i],
+                        b: pts[(i + 1) % pts.len()],
+                        owner,
+                    });
+                }
+            }
+            let edges = arrangement(&inputs);
+            let fast = edge_windings(&edges);
+            for (k, w) in fast.iter().enumerate() {
+                assert_eq!(*w, left_winding(&edges, k), "ребро {:?}", edges[k]);
+            }
+        });
+    }
+
+    #[test]
+    fn ccw_order() {
+        let (e, n, w, s) = ((1, 0), (0, 1), (-1, 0), (0, -1));
+        assert_eq!(ccw_cmp(e, n), Ordering::Less);
+        assert_eq!(ccw_cmp(n, w), Ordering::Less);
+        assert_eq!(ccw_cmp(w, s), Ordering::Less);
+        assert_eq!(ccw_cmp(s, e), Ordering::Greater);
     }
 
     #[test]
